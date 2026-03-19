@@ -25,6 +25,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private let maxRecordingDuration: TimeInterval = 300 // 5 minutes
     private let maxProcessingDuration: UInt64 = 150_000_000_000 // 150 seconds in nanoseconds
 
+    // System sounds for recording feedback
+    private let startSound: NSSound? = NSSound(named: "Tink")
+    private let stopSound: NSSound? = NSSound(named: "Pop")
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         log("App launched")
         AudioRecorder.cleanupStaleFiles()
@@ -204,6 +208,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         do {
             _ = try recorder.startRecording()
+            startSound?.play()
             log("Recording started")
 
             maxRecordingTimer = Timer.scheduledTimer(withTimeInterval: maxRecordingDuration, repeats: false) { [weak self] _ in
@@ -223,6 +228,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         isProcessing = true
         maxRecordingTimer?.invalidate()
         maxRecordingTimer = nil
+
+        stopSound?.play()
 
         guard let audioURL = recorder.stopRecording() else {
             log("ERROR: No audio file after stopping recording")

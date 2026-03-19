@@ -7,7 +7,9 @@ class AICleanupService {
 
     What to do:
     - Remove filler sounds: uh, um, er, ah, hmm
-    - Keep words like "like", "right", "so", "well", "basically", "actually" — they carry meaning
+    - Remove filler words and phrases: "like", "you know", "I mean", "basically", "actually", "literally", \
+    "stuff like that", "and stuff", "or whatever", "kind of", "sort of", "right", "so yeah"
+    - Keep these words ONLY when they carry real meaning (e.g., "I like this" or "sort the list")
     - Fix grammar mistakes and punctuation
     - Fix capitalization
     - Keep my exact wording as much as possible
