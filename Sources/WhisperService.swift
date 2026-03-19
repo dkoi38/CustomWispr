@@ -36,13 +36,12 @@ class WhisperService {
     }
 
     private func attemptTranscribe(audioFileURL: URL) async throws -> String {
-        guard let url = URL(string: "\(Config.openAIBaseURL)/audio/transcriptions") else {
+        guard let url = URL(string: "\(Config.whisperBaseURL)/inference") else {
             throw WhisperError.invalidURL
         }
 
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
-        request.setValue("Bearer \(Config.apiKey)", forHTTPHeaderField: "Authorization")
 
         let boundary = UUID().uuidString
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
@@ -50,10 +49,15 @@ class WhisperService {
         let audioData = try Data(contentsOf: audioFileURL)
         var body = Data()
 
-        // model field
+        // response_format field
         body.append("--\(boundary)\r\n".data(using: .utf8)!)
-        body.append("Content-Disposition: form-data; name=\"model\"\r\n\r\n".data(using: .utf8)!)
-        body.append("\(Config.whisperModel)\r\n".data(using: .utf8)!)
+        body.append("Content-Disposition: form-data; name=\"response_format\"\r\n\r\n".data(using: .utf8)!)
+        body.append("json\r\n".data(using: .utf8)!)
+
+        // temperature field
+        body.append("--\(boundary)\r\n".data(using: .utf8)!)
+        body.append("Content-Disposition: form-data; name=\"temperature\"\r\n\r\n".data(using: .utf8)!)
+        body.append("0.0\r\n".data(using: .utf8)!)
 
         // language hint — skips auto-detection for faster processing
         body.append("--\(boundary)\r\n".data(using: .utf8)!)
@@ -62,8 +66,8 @@ class WhisperService {
 
         // audio file
         body.append("--\(boundary)\r\n".data(using: .utf8)!)
-        body.append("Content-Disposition: form-data; name=\"file\"; filename=\"audio.m4a\"\r\n".data(using: .utf8)!)
-        body.append("Content-Type: audio/m4a\r\n\r\n".data(using: .utf8)!)
+        body.append("Content-Disposition: form-data; name=\"file\"; filename=\"audio.wav\"\r\n".data(using: .utf8)!)
+        body.append("Content-Type: audio/wav\r\n\r\n".data(using: .utf8)!)
         body.append(audioData)
         body.append("\r\n".data(using: .utf8)!)
 
@@ -95,15 +99,18 @@ class WhisperService {
         case invalidURL
         case invalidResponse
         case apiError(statusCode: Int, message: String)
+        case serverUnavailable
 
         var errorDescription: String? {
             switch self {
             case .invalidURL:
-                return "Invalid Whisper API URL"
+                return "Invalid Whisper server URL"
             case .invalidResponse:
-                return "Invalid response from Whisper API"
+                return "Invalid response from Whisper server"
             case .apiError(let code, let message):
-                return "Whisper API error (\(code)): \(message)"
+                return "Whisper server error (\(code)): \(message)"
+            case .serverUnavailable:
+                return "Local Whisper server not running. Start it with: whisper-server --model ~/.local/share/whisper-models/ggml-base.en.bin --port 8080"
             }
         }
     }

@@ -7,7 +7,11 @@ class KeyMonitor {
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
     private var healthCheckTimer: Timer?
-    private var fnIsDown = false
+
+    /// Toggle mode: tap once to start, tap again to stop
+    private var isToggled = false
+    /// Track last press time to debounce
+    private var lastPressTime: TimeInterval = 0
 
     private static let fnKeyCode: UInt16 = 63
     private static let fnFlagMask: UInt64 = 0x800000
@@ -50,7 +54,7 @@ class KeyMonitor {
             }
         }
 
-        log("Key monitor started successfully")
+        log("Key monitor started (tap-to-toggle mode)")
         return true
     }
 
@@ -87,20 +91,29 @@ class KeyMonitor {
         let flags = event.flags.rawValue
         let fnPressed = (flags & KeyMonitor.fnFlagMask) != 0
 
-        if fnPressed && !fnIsDown {
-            fnIsDown = true
-            DispatchQueue.main.async { [weak self] in
-                self?.onFnKeyDown?()
+        // Only act on key PRESS (not release). Debounce 300ms.
+        if fnPressed {
+            let now = ProcessInfo.processInfo.systemUptime
+            guard (now - lastPressTime) > 0.3 else {
+                return nil // Too fast, ignore (debounce)
             }
-            return nil // Suppress the event
-        } else if !fnPressed && fnIsDown {
-            fnIsDown = false
-            DispatchQueue.main.async { [weak self] in
-                self?.onFnKeyUp?()
+            lastPressTime = now
+
+            if !isToggled {
+                isToggled = true
+                DispatchQueue.main.async { [weak self] in
+                    self?.onFnKeyDown?()
+                }
+            } else {
+                isToggled = false
+                DispatchQueue.main.async { [weak self] in
+                    self?.onFnKeyUp?()
+                }
             }
-            return nil // Suppress the event
+            return nil
         }
 
-        return Unmanaged.passRetained(event)
+        // Suppress fn release too so it doesn't trigger other macOS behaviors
+        return nil
     }
 }

@@ -9,21 +9,20 @@ class AudioRecorder {
 
     func startRecording() throws -> URL {
         let tempDir = FileManager.default.temporaryDirectory
-        let fileURL = tempDir.appendingPathComponent("custom-wispr_\(UUID().uuidString).m4a")
+        let fileURL = tempDir.appendingPathComponent("custom-wispr_\(UUID().uuidString).wav")
         self.tempFileURL = fileURL
 
         let engine = AVAudioEngine()
         let inputNode = engine.inputNode
 
-        // Use outputFormat (not inputFormat) to avoid crashes on some hardware
-        let recordingFormat = inputNode.outputFormat(forBus: 0)
+        let hardwareFormat = inputNode.outputFormat(forBus: 0)
 
-        guard recordingFormat.sampleRate > 0 else {
+        guard hardwareFormat.sampleRate > 0 else {
             throw RecorderError.noMicrophone
         }
 
-        // Downsample to 16kHz mono — Whisper internally uses 16kHz anyway,
-        // and smaller files upload significantly faster
+        // Downsample to 16kHz mono — whisper.cpp wants 16kHz natively, so this
+        // avoids server-side resampling AND uploads stay tiny.
         let targetFormat = AVAudioFormat(
             commonFormat: .pcmFormatFloat32,
             sampleRate: 16000,
@@ -31,23 +30,28 @@ class AudioRecorder {
             interleaved: false
         )!
 
-        let conv = AVAudioConverter(from: recordingFormat, to: targetFormat)!
+        let conv = AVAudioConverter(from: hardwareFormat, to: targetFormat)!
         self.converter = conv
 
+        // Write 16kHz mono 16-bit PCM WAV on disk; AVAudioFile auto-converts
+        // from the float32 in-memory buffers we hand it.
         let audioFile = try AVAudioFile(
             forWriting: fileURL,
             settings: [
-                AVFormatIDKey: kAudioFormatMPEG4AAC,
+                AVFormatIDKey: kAudioFormatLinearPCM,
                 AVSampleRateKey: 16000.0,
                 AVNumberOfChannelsKey: 1,
-                AVEncoderAudioQualityKey: AVAudioQuality.medium.rawValue,
-                AVEncoderBitRateKey: 32000
-            ]
+                AVLinearPCMBitDepthKey: 16,
+                AVLinearPCMIsFloatKey: false,
+                AVLinearPCMIsBigEndianKey: false
+            ],
+            commonFormat: .pcmFormatFloat32,
+            interleaved: false
         )
 
-        let sampleRateRatio = 16000.0 / recordingFormat.sampleRate
+        let sampleRateRatio = 16000.0 / hardwareFormat.sampleRate
 
-        inputNode.installTap(onBus: 0, bufferSize: 4096, format: recordingFormat) { buffer, _ in
+        inputNode.installTap(onBus: 0, bufferSize: 4096, format: hardwareFormat) { buffer, _ in
             let outputCapacity = AVAudioFrameCount(ceil(Double(buffer.frameLength) * sampleRateRatio))
             guard let converted = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: outputCapacity) else { return }
 
@@ -101,7 +105,8 @@ class AudioRecorder {
             includingPropertiesForKeys: nil
         ) else { return }
 
-        for file in files where file.lastPathComponent.hasPrefix("custom-wispr_") && file.pathExtension == "m4a" {
+        for file in files where file.lastPathComponent.hasPrefix("custom-wispr_") &&
+            (file.pathExtension == "wav" || file.pathExtension == "m4a") {
             try? FileManager.default.removeItem(at: file)
         }
     }
