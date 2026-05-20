@@ -4,25 +4,28 @@ enum Config {
     // Local whisper.cpp server
     static let whisperBaseURL = "http://localhost:8080"
 
-    // Claude Max Proxy (via SSH tunnel to Windows)
-    static let cleanupBaseURL = "http://localhost:3456/v1"
-    static let cleanupModel = "claude-haiku-4"
+    // Primary: Gemini 2.0 Flash via OpenAI-compatible endpoint (free tier)
+    static let cleanupBaseURL = "https://generativelanguage.googleapis.com/v1beta/openai"
+    static let cleanupModel = "gemini-2.0-flash"
 
-    // Cleanup API key — read from env file if proxy requires one, otherwise dummy
+    // Fallback: OpenAI gpt-4.1-mini (paid, used when Gemini rate-limited or fails)
+    static let fallbackBaseURL = "https://api.openai.com/v1"
+    static let fallbackModel = "gpt-4.1-mini"
+
     static var cleanupAPIKey: String {
-        if let key = readKeyFromEnvFile("CLEANUP_API_KEY") {
-            return key
-        }
-        // Also check legacy OPENAI_API_KEY for backward compat
-        if let key = readKeyFromEnvFile("OPENAI_API_KEY") {
-            return key
-        }
-        if let key = ProcessInfo.processInfo.environment["CLEANUP_API_KEY"], !key.isEmpty {
-            return key
-        }
-        // Default: most proxies don't require a real key
+        if let key = readKeyFromEnvFile("GEMINI_API_KEY") { return key }
+        if let key = readKeyFromEnvFile("CLEANUP_API_KEY") { return key }
+        if let key = ProcessInfo.processInfo.environment["GEMINI_API_KEY"], !key.isEmpty { return key }
         return "not-needed"
     }
+
+    static var fallbackAPIKey: String {
+        if let key = readKeyFromEnvFile("OPENAI_API_KEY") { return key }
+        if let key = ProcessInfo.processInfo.environment["OPENAI_API_KEY"], !key.isEmpty { return key }
+        return ""
+    }
+
+    static var hasFallback: Bool { !fallbackAPIKey.isEmpty }
 
     // No API key required for local whisper — always ready
     static var hasAPIKey: Bool { true }

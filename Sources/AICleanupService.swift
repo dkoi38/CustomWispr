@@ -52,14 +52,42 @@ class AICleanupService {
         }
 
         do {
-            let cleaned = try await callCleanupAPI(rawText: replaced)
+            let cleaned = try await callCleanupAPI(
+                baseURL: Config.cleanupBaseURL,
+                model: Config.cleanupModel,
+                apiKey: Config.cleanupAPIKey,
+                rawText: replaced
+            )
             if isRefusal(cleaned) {
-                log("LLM returned a refusal instead of cleaned text. Falling back to replaced text.")
+                log("Primary LLM returned a refusal. Falling back to replaced text.")
                 return replaced
             }
             return cleaned
         } catch {
-            log("LLM cleanup failed: \(error.localizedDescription). Using replaced text.")
+            log("Primary LLM cleanup failed: \(error.localizedDescription)")
+
+            // Try paid fallback (OpenAI) if available
+            if Config.hasFallback {
+                log("Trying fallback: \(Config.fallbackModel)")
+                do {
+                    let cleaned = try await callCleanupAPI(
+                        baseURL: Config.fallbackBaseURL,
+                        model: Config.fallbackModel,
+                        apiKey: Config.fallbackAPIKey,
+                        rawText: replaced
+                    )
+                    if isRefusal(cleaned) {
+                        log("Fallback LLM returned a refusal. Using replaced text.")
+                        return replaced
+                    }
+                    return cleaned
+                } catch {
+                    log("Fallback LLM also failed: \(error.localizedDescription). Using replaced text.")
+                    return replaced
+                }
+            }
+
+            log("No fallback configured. Using replaced text.")
             return replaced
         }
     }
@@ -72,18 +100,18 @@ class AICleanupService {
         return URLSession(configuration: config)
     }()
 
-    private func callCleanupAPI(rawText: String) async throws -> String {
-        guard let url = URL(string: "\(Config.cleanupBaseURL)/chat/completions") else {
+    private func callCleanupAPI(baseURL: String, model: String, apiKey: String, rawText: String) async throws -> String {
+        guard let url = URL(string: "\(baseURL)/chat/completions") else {
             throw CleanupError.invalidURL
         }
 
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
-        request.setValue("Bearer \(Config.cleanupAPIKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
 
         let payload: [String: Any] = [
-            "model": Config.cleanupModel,
+            "model": model,
             "temperature": 0.1,
             "max_tokens": 2048,
             "messages": [
