@@ -4,9 +4,11 @@ enum Config {
     // Local whisper.cpp server
     static let whisperBaseURL = "http://localhost:8080"
 
-    // Primary: Gemini 2.0 Flash via OpenAI-compatible endpoint (free tier)
+    // Primary: Gemini 2.5 Flash-Lite via OpenAI-compatible endpoint (free tier)
+    // 2.5-flash-lite benchmarks ~25% faster than 2.0-flash for short cleanup prompts
+    // (5-run median: 580ms vs 793ms, May 27 2026).
     static let cleanupBaseURL = "https://generativelanguage.googleapis.com/v1beta/openai"
-    static let cleanupModel = "gemini-2.0-flash"
+    static let cleanupModel = "gemini-2.5-flash-lite"
 
     // Fallback: OpenAI gpt-4.1-mini (paid, used when Gemini rate-limited or fails)
     static let fallbackBaseURL = "https://api.openai.com/v1"
