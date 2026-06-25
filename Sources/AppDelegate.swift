@@ -60,10 +60,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         requestPermissions()
         startKeyMonitor()
 
-        // Check for updates after a short delay so the app feels snappy
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
-            UpdateChecker.checkForUpdates()
-        }
+        // Auto-update DISABLED on purpose. This is a customized fork (dkoi38/CustomWispr)
+        // with local changes — warm-mic capture and local Ollama cleanup. Installing an
+        // upstream beausterling/CustomWispr release would silently overwrite those fixes.
+        // To take upstream changes, merge them via git and rebuild deliberately instead.
+        // (UpdateChecker.swift is intentionally left in the tree but no longer invoked.)
     }
 
     // MARK: - Menu Bar
