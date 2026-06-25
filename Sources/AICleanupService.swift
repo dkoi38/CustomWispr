@@ -45,51 +45,35 @@ class AICleanupService {
     func cleanup(rawText: String) async -> String {
         let replaced = SettingsManager.shared.applyReplacements(rawText)
 
-        // Skip GPT for very short text — not worth the extra API round trip
+        // Skip cleanup for very short text — not worth the round trip
         guard replaced.count >= 30 else {
-            log("Short transcription (\(replaced.count) chars), skipping GPT cleanup")
+            log("Short transcription (\(replaced.count) chars), skipping cleanup")
             return replaced
         }
 
-        do {
-            let cleaned = try await callCleanupAPI(
-                baseURL: Config.cleanupBaseURL,
-                model: Config.cleanupModel,
-                apiKey: Config.cleanupAPIKey,
-                rawText: replaced
-            )
-            if isRefusal(cleaned) {
-                log("Primary LLM returned a refusal. Falling back to replaced text.")
-                return replaced
-            }
-            return cleaned
-        } catch {
-            log("Primary LLM cleanup failed: \(error.localizedDescription)")
-
-            // Try paid fallback (OpenAI) if available
-            if Config.hasFallback {
-                log("Trying fallback: \(Config.fallbackModel)")
-                do {
-                    let cleaned = try await callCleanupAPI(
-                        baseURL: Config.fallbackBaseURL,
-                        model: Config.fallbackModel,
-                        apiKey: Config.fallbackAPIKey,
-                        rawText: replaced
-                    )
-                    if isRefusal(cleaned) {
-                        log("Fallback LLM returned a refusal. Using replaced text.")
-                        return replaced
-                    }
-                    return cleaned
-                } catch {
-                    log("Fallback LLM also failed: \(error.localizedDescription). Using replaced text.")
-                    return replaced
+        // Walk the provider chain (local Ollama first, cloud fallbacks after). The first
+        // provider that returns a non-refusal response wins. If we ever fall past the
+        // first provider, that's logged so degradation is visible, not silent.
+        let providers = Config.cleanupProviders
+        for (index, provider) in providers.enumerated() {
+            do {
+                let cleaned = try await callCleanupAPI(provider: provider, rawText: replaced)
+                if isRefusal(cleaned) {
+                    log("Cleanup provider '\(provider.name)' returned a refusal, trying next")
+                    continue
                 }
+                if index > 0 {
+                    log("Cleanup used FALLBACK provider '\(provider.name)' (local cleanup unavailable)")
+                }
+                return cleaned
+            } catch {
+                log("Cleanup provider '\(provider.name)' failed: \(error.localizedDescription)")
+                continue
             }
-
-            log("No fallback configured. Using replaced text.")
-            return replaced
         }
+
+        log("All cleanup providers failed; using raw transcript")
+        return replaced
     }
 
     /// URLSession with a hard cap on total request time
@@ -100,18 +84,18 @@ class AICleanupService {
         return URLSession(configuration: config)
     }()
 
-    private func callCleanupAPI(baseURL: String, model: String, apiKey: String, rawText: String) async throws -> String {
-        guard let url = URL(string: "\(baseURL)/chat/completions") else {
+    private func callCleanupAPI(provider: Config.CleanupProvider, rawText: String) async throws -> String {
+        guard let url = URL(string: "\(provider.baseURL)/chat/completions") else {
             throw CleanupError.invalidURL
         }
 
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("Bearer \(provider.apiKey)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
 
         let payload: [String: Any] = [
-            "model": model,
+            "model": provider.model,
             "temperature": 0.1,
             "max_tokens": 2048,
             "messages": [

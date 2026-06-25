@@ -43,9 +43,22 @@ echo "==> Copying resources..."
 cp "${RESOURCES_DIR}/Info.plist" "${APP_BUNDLE}/Contents/"
 
 echo "==> Code signing..."
-codesign --force --sign - \
-    --entitlements "${RESOURCES_DIR}/entitlements.plist" \
-    "${APP_BUNDLE}"
+# Sign with a STABLE self-signed identity if present, so the TCC designated requirement
+# stays constant across rebuilds and macOS keeps Accessibility/Microphone grants.
+# Falls back to ad-hoc (--sign -) if the cert isn't in the keychain (e.g. another machine),
+# in which case permissions will need re-granting after install. See project_customwispr.md.
+SIGN_IDENTITY="CustomWispr Self Signed"
+if security find-identity -p codesigning 2>/dev/null | grep -q "$SIGN_IDENTITY"; then
+    echo "    using stable identity: $SIGN_IDENTITY"
+    codesign --force --sign "$SIGN_IDENTITY" \
+        --entitlements "${RESOURCES_DIR}/entitlements.plist" \
+        "${APP_BUNDLE}"
+else
+    echo "    WARNING: '$SIGN_IDENTITY' not found — signing ad-hoc (permissions will need re-granting)"
+    codesign --force --sign - \
+        --entitlements "${RESOURCES_DIR}/entitlements.plist" \
+        "${APP_BUNDLE}"
+fi
 
 echo ""
 echo "=== Build complete (Apple Silicon): ${APP_BUNDLE} ==="
