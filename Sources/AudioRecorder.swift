@@ -20,6 +20,11 @@ class AudioRecorder {
     private var audioEngine: AVAudioEngine?
     private var converter: AVAudioConverter?
 
+    /// Token for the audio-configuration-change observer. Lets us rebuild the warm engine
+    /// when the input device or format changes out from under us.
+    private var configObserver: NSObjectProtocol?
+    private var rebuildRetries = 0
+
     /// whisper.cpp wants 16kHz mono float32 natively.
     private let targetFormat = AVAudioFormat(
         commonFormat: .pcmFormatFloat32,
@@ -41,6 +46,55 @@ class AudioRecorder {
     private var isCapturing = false
     private var audioFile: AVAudioFile?
     private var tempFileURL: URL?
+
+    init() {
+        // Recover automatically when the audio hardware configuration changes — e.g. a
+        // meeting app (Zoom/Fathom) grabs the mic, AirPods flip into headset mode, or the
+        // default input device changes. AVAudioEngine does NOT follow such changes on its
+        // own: the running input tap goes permanently silent, so every dictation captures
+        // only the 0.3s pre-roll of silence and Whisper hallucinates "thank you." We
+        // rebuild the warm engine so it re-binds to the new device. Delivered on the main
+        // queue to stay ordered with startRecording()/teardown().
+        configObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.rebuildEngine()
+        }
+    }
+
+    deinit {
+        if let observer = configObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
+    }
+
+    /// Rebuild the warm engine against the CURRENT default input device. Runs on the main
+    /// queue after an audio-configuration change. A freshly-switched device can briefly
+    /// report an invalid (0 Hz) format, so prewarm() may fail transiently — retry without
+    /// blocking the main thread until it succeeds (or we give up after a few seconds).
+    private func rebuildEngine() {
+        if let engine = audioEngine {
+            engine.inputNode.removeTap(onBus: 0)
+            engine.stop()
+        }
+        audioEngine = nil
+        converter = nil
+
+        if prewarm() {
+            rebuildRetries = 0
+            NSLog("CustomWispr: audio engine rebuilt after device change")
+        } else if rebuildRetries < 15 {
+            rebuildRetries += 1
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+                self?.rebuildEngine()
+            }
+        } else {
+            rebuildRetries = 0
+            NSLog("CustomWispr: failed to rebuild audio engine after device change")
+        }
+    }
 
     /// Start the engine and keep it warm. Safe to call repeatedly (no-op once running).
     @discardableResult
