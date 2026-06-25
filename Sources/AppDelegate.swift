@@ -146,6 +146,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func quit() {
         keyMonitor.stop()
+        recorder.teardown()
         NSApplication.shared.terminate(nil)
     }
 
@@ -231,74 +232,81 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         stopSound?.play()
 
-        guard let audioURL = recorder.stopRecording() else {
-            log("ERROR: No audio file after stopping recording")
-            isProcessing = false
-            overlay.hide()
-            return
-        }
+        log("Recording stopped (capturing trailing audio briefly)...")
 
-        overlay.show(status: "Transcribing...")
-        log("Recording stopped, processing...")
+        // Stop after a short hangover so the last word's tail isn't clipped, then process.
+        // The warm mic keeps running for next time; the finished file arrives via callback.
+        recorder.stopRecording { [weak self] audioURL in
+            guard let self = self else { return }
 
-        processingTask = Task {
-            defer {
-                DispatchQueue.main.async { [weak self] in
-                    self?.isProcessing = false
-                    self?.processingTask = nil
-                    self?.overlay.hide()
-                    self?.recorder.cleanup()
-                }
+            guard let audioURL = audioURL else {
+                log("ERROR: No audio file after stopping recording")
+                self.isProcessing = false
+                self.overlay.hide()
+                return
             }
 
-            do {
-                // Overall timeout: race the pipeline against a deadline
-                try await withThrowingTaskGroup(of: String.self) { group in
-                    group.addTask { [self] in
-                        // Step 1: Transcribe
-                        let rawText = try await whisper.transcribe(audioFileURL: audioURL)
-                        #if DEBUG
-                        log("Transcribed: \(rawText.prefix(100))...")
-                        #endif
+            self.overlay.show(status: "Transcribing...")
 
-                        guard !rawText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                            log("Empty transcription, skipping")
-                            return ""
+            self.processingTask = Task {
+                defer {
+                    DispatchQueue.main.async { [weak self] in
+                        self?.isProcessing = false
+                        self?.processingTask = nil
+                        self?.overlay.hide()
+                        self?.recorder.cleanup()
+                    }
+                }
+
+                do {
+                    // Overall timeout: race the pipeline against a deadline
+                    try await withThrowingTaskGroup(of: String.self) { group in
+                        group.addTask { [self] in
+                            // Step 1: Transcribe
+                            let rawText = try await self.whisper.transcribe(audioFileURL: audioURL)
+                            #if DEBUG
+                            log("Transcribed: \(rawText.prefix(100))...")
+                            #endif
+
+                            guard !rawText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                                log("Empty transcription, skipping")
+                                return ""
+                            }
+
+                            // Step 2: Clean up with AI
+                            await MainActor.run { self.overlay.show(status: "Cleaning up...") }
+                            let cleanedText = await self.cleanup.cleanup(rawText: rawText)
+                            #if DEBUG
+                            log("Cleaned: \(cleanedText.prefix(100))...")
+                            #endif
+
+                            return cleanedText
                         }
 
-                        // Step 2: Clean up with AI
-                        await MainActor.run { overlay.show(status: "Cleaning up...") }
-                        let cleanedText = await cleanup.cleanup(rawText: rawText)
-                        #if DEBUG
-                        log("Cleaned: \(cleanedText.prefix(100))...")
-                        #endif
+                        // Timeout task
+                        group.addTask { [self] in
+                            try await Task.sleep(nanoseconds: self.maxProcessingDuration)
+                            throw ProcessingError.timeout
+                        }
 
-                        return cleanedText
-                    }
-
-                    // Timeout task
-                    group.addTask { [self] in
-                        try await Task.sleep(nanoseconds: maxProcessingDuration)
-                        throw ProcessingError.timeout
-                    }
-
-                    // Take whichever finishes first
-                    if let result = try await group.next() {
-                        group.cancelAll()
-                        if !result.isEmpty {
-                            await MainActor.run { [self] in
-                                injector.inject(text: result)
-                                log("Text injected successfully")
+                        // Take whichever finishes first
+                        if let result = try await group.next() {
+                            group.cancelAll()
+                            if !result.isEmpty {
+                                await MainActor.run { [self] in
+                                    self.injector.inject(text: result)
+                                    log("Text injected successfully")
+                                }
                             }
                         }
                     }
+                } catch is CancellationError {
+                    log("Processing was cancelled by user")
+                } catch ProcessingError.timeout {
+                    log("ERROR: Processing timed out after \(self.maxProcessingDuration / 1_000_000_000)s")
+                } catch {
+                    log("ERROR: Processing failed: \(error.localizedDescription)")
                 }
-            } catch is CancellationError {
-                log("Processing was cancelled by user")
-            } catch ProcessingError.timeout {
-                log("ERROR: Processing timed out after \(maxProcessingDuration / 1_000_000_000)s")
-            } catch {
-                log("ERROR: Processing failed: \(error.localizedDescription)")
             }
         }
     }

@@ -4,32 +4,50 @@ enum Config {
     // Local whisper.cpp server
     static let whisperBaseURL = "http://localhost:8080"
 
-    // Primary: Gemini 2.5 Flash-Lite via OpenAI-compatible endpoint (free tier)
-    // 2.5-flash-lite benchmarks ~25% faster than 2.0-flash for short cleanup prompts
-    // (5-run median: 580ms vs 793ms, May 27 2026).
-    static let cleanupBaseURL = "https://generativelanguage.googleapis.com/v1beta/openai"
-    static let cleanupModel = "gemini-2.5-flash-lite"
-
-    // Fallback: OpenAI gpt-4.1-mini (paid, used when Gemini rate-limited or fails)
-    static let fallbackBaseURL = "https://api.openai.com/v1"
-    static let fallbackModel = "gpt-4.1-mini"
-
-    static var cleanupAPIKey: String {
-        if let key = readKeyFromEnvFile("GEMINI_API_KEY") { return key }
-        if let key = readKeyFromEnvFile("CLEANUP_API_KEY") { return key }
-        if let key = ProcessInfo.processInfo.environment["GEMINI_API_KEY"], !key.isEmpty { return key }
-        return "not-needed"
+    /// One cleanup backend (OpenAI-compatible chat/completions endpoint).
+    struct CleanupProvider {
+        let name: String
+        let baseURL: String
+        let model: String
+        let apiKey: String
     }
 
-    static var fallbackAPIKey: String {
-        if let key = readKeyFromEnvFile("OPENAI_API_KEY") { return key }
-        if let key = ProcessInfo.processInfo.environment["OPENAI_API_KEY"], !key.isEmpty { return key }
-        return ""
+    /// Ordered cleanup chain, tried top to bottom.
+    ///
+    /// PRIMARY is LOCAL Ollama: no API key, no rate limit, no key rotation — so it
+    /// can't silently degrade. That silent degradation (a dead/rate-limited cloud key
+    /// quietly forcing the slow fallback path) was the recurring cause of "dictation
+    /// got slow." Cloud providers below are OPTIONAL fallbacks, used only if the local
+    /// model is unreachable, and only if their key is present in ~/.custom-wispr.env.
+    static var cleanupProviders: [CleanupProvider] {
+        var chain: [CleanupProvider] = [
+            CleanupProvider(
+                name: "ollama-local",
+                baseURL: "http://localhost:11434/v1",
+                model: "llama3.2:3b",
+                apiKey: "ollama"   // Ollama ignores this; keeps the Bearer header well-formed
+            )
+        ]
+        if let gemini = readKeyFromEnvFile("GEMINI_API_KEY") {
+            chain.append(CleanupProvider(
+                name: "gemini",
+                baseURL: "https://generativelanguage.googleapis.com/v1beta/openai",
+                model: "gemini-2.5-flash-lite",
+                apiKey: gemini
+            ))
+        }
+        if let openai = readKeyFromEnvFile("OPENAI_API_KEY") {
+            chain.append(CleanupProvider(
+                name: "openai",
+                baseURL: "https://api.openai.com/v1",
+                model: "gpt-4.1-mini",
+                apiKey: openai
+            ))
+        }
+        return chain
     }
 
-    static var hasFallback: Bool { !fallbackAPIKey.isEmpty }
-
-    // No API key required for local whisper — always ready
+    // Local cleanup needs no key and is always available, so the app is always "ready".
     static var hasAPIKey: Bool { true }
 
     static func saveAPIKey(_ key: String) -> Bool {
