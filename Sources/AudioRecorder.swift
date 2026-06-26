@@ -4,7 +4,7 @@ import Foundation
 /// Records microphone audio for push-to-talk dictation.
 ///
 /// Design notes — this fixes word-clipping at the start and end of dictation:
-///   • The AVAudioEngine is started ONCE and kept warm for the app's lifetime, so the
+///   • The AVAudioEngine is started on first use and kept warm between dictations, so the
 ///     microphone is already live when you press the hotkey. Previously a brand-new
 ///     engine was cold-started on every keypress, and the ~100-300ms it took the mic
 ///     to spin up swallowed the first word(s).
@@ -12,10 +12,12 @@ import Foundation
 ///     audio. When recording starts, that pre-roll is written first, so a word spoken
 ///     in the instant before/at the keypress is still captured.
 ///   • On stop, capture continues for a short "hangover" (~250ms) before the file is
-///     closed, so the tail of your last word isn't clipped. The engine stays warm.
+///     closed, so the tail of your last word isn't clipped.
 ///
-/// Trade-off: because the mic stays warm after first use, the macOS microphone
-/// indicator stays on while the app runs. That is the cost of zero start-clipping.
+/// The engine stays warm between dictations, then releases the mic after a short idle
+/// window (`idleReleaseSeconds`) so the macOS mic indicator goes dark when you're not
+/// dictating. Successive dictations within the window stay warm (no clipping); only the
+/// first dictation after an idle gap pays the cold-start cost.
 class AudioRecorder {
     private var audioEngine: AVAudioEngine?
     private var converter: AVAudioConverter?
@@ -24,6 +26,11 @@ class AudioRecorder {
     /// when the input device or format changes out from under us.
     private var configObserver: NSObjectProtocol?
     private var rebuildRetries = 0
+
+    /// Release the warm mic — and clear the macOS mic indicator — after this many seconds
+    /// with no dictation. Successive dictations within the window stay warm (no clipping).
+    private let idleReleaseSeconds: TimeInterval = 60
+    private var idleReleaseWorkItem: DispatchWorkItem?
 
     /// whisper.cpp wants 16kHz mono float32 natively.
     private let targetFormat = AVAudioFormat(
@@ -75,6 +82,14 @@ class AudioRecorder {
     /// report an invalid (0 Hz) format, so prewarm() may fail transiently — retry without
     /// blocking the main thread until it succeeds (or we give up after a few seconds).
     private func rebuildEngine() {
+        // Only recover an engine that is meant to be live. If the mic was released while
+        // idle, stay released — the next dictation prewarms fresh against the current
+        // device — so a device change doesn't relight the mic indicator while idle.
+        stateLock.lock()
+        let capturing = isCapturing
+        stateLock.unlock()
+        guard audioEngine != nil || capturing else { return }
+
         if let engine = audioEngine {
             engine.inputNode.removeTap(onBus: 0)
             engine.stop()
@@ -167,6 +182,10 @@ class AudioRecorder {
         // Make sure the mic is warm (no-op if already running).
         guard prewarm() else { throw RecorderError.noMicrophone }
 
+        // New dictation in progress — keep the mic warm; cancel any pending idle release.
+        idleReleaseWorkItem?.cancel()
+        idleReleaseWorkItem = nil
+
         let tempDir = FileManager.default.temporaryDirectory
         let fileURL = tempDir.appendingPathComponent("custom-wispr_\(UUID().uuidString).wav")
 
@@ -213,7 +232,26 @@ class AudioRecorder {
             let url = self.tempFileURL
             self.stateLock.unlock()
             completion(url)
+
+            // Let the mic go cold (indicator off) if no new dictation starts soon.
+            self.scheduleIdleRelease()
         }
+    }
+
+    /// Release the warm engine once the idle window passes with no new recording, turning
+    /// the microphone — and its menu-bar indicator — off until the next dictation.
+    private func scheduleIdleRelease() {
+        idleReleaseWorkItem?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self = self else { return }
+            self.stateLock.lock()
+            let capturing = self.isCapturing
+            self.stateLock.unlock()
+            guard !capturing else { return }   // a new dictation started — stay warm
+            self.teardown()                     // release mic → indicator goes dark
+        }
+        idleReleaseWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + idleReleaseSeconds, execute: work)
     }
 
     private func makeBuffer(from samples: [Float]) -> AVAudioPCMBuffer? {
@@ -237,8 +275,10 @@ class AudioRecorder {
         }
     }
 
-    /// Stop the warm engine (call on quit).
+    /// Stop the warm engine (call on quit or after the idle window).
     func teardown() {
+        idleReleaseWorkItem?.cancel()
+        idleReleaseWorkItem = nil
         audioEngine?.inputNode.removeTap(onBus: 0)
         audioEngine?.stop()
         audioEngine = nil
