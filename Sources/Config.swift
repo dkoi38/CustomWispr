@@ -24,7 +24,11 @@ enum Config {
             CleanupProvider(
                 name: "ollama-local",
                 baseURL: "http://localhost:11434/v1",
-                model: "llama3.2:3b",
+                // qwen2.5:3b follows the "clean the words, NEVER answer/translate/summarize the
+                // dictation" instruction far more reliably than llama3.2:3b at the same warm
+                // latency. llama3.2:3b would execute questions/commands (e.g. dictating "what is
+                // 2+2" typed "4", "translate..." typed the translation). Verified head-to-head.
+                model: "qwen2.5:3b",
                 apiKey: "ollama"   // Ollama ignores this; keeps the Bearer header well-formed
             )
         ]
